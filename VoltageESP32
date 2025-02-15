@@ -1,0 +1,161 @@
+//voltage
+
+#include <WiFi.h>
+#include <esp_now.h>
+
+// Device identification
+const uint8_t DEVICE_ID = 3;  // Change this for each ESP32 (1, 2, or 3)
+
+// Debugging flag
+bool debug = true;
+
+// Resistor values for voltage divider (in Ohms)
+const int R1 = 15000;   // Resistor R1
+const int R2 = 150000;  // Resistor R2
+
+// ADC pins for voltage measurement
+const int VinPin1 = 32; // First voltage divider input
+const int VinPin2 = 33; // Second voltage divider input
+const int VinPin3 = 34; // Third voltage divider input
+
+// Battery monitoring pin (if available)
+const int BATTERY_PIN = 35;  // ADC pin for battery monitoring
+
+// Structures for different message types
+typedef struct {
+    float voltage[3];  // Voltages from three dividers
+} VoltageData;
+
+typedef struct {
+    uint8_t deviceId;
+    float batteryLevel;
+} heartbeat_message;
+
+// Variables to hold data
+VoltageData voltageData;
+heartbeat_message heartbeatData;
+
+// MAC address of Main ESP32 (Replace with actual MAC)
+uint8_t mainEspMac[] = {0x88, 0x13, 0xbf, 0x03, 0x67, 0x20}; // Update this!
+
+// Timing variables for heartbeat
+unsigned long lastHeartbeatTime = 0;
+const unsigned long HEARTBEAT_INTERVAL = 5000; // Send heartbeat every 5 seconds
+
+// Function to read battery level (modify based on your hardware setup)
+float getBatteryLevel() {
+    // Read battery voltage from ADC
+    uint32_t battery_mV = analogReadMilliVolts(BATTERY_PIN);
+    float batteryVoltage = (((float)battery_mV) / 1000.0) * (1 + (float)R2 / (float)R1);
+    
+    // Convert voltage to percentage (adjust these values based on your battery)
+    float batteryPercentage = (batteryVoltage - 3.3) * 100.0 / (4.2 - 3.3);
+    if (batteryPercentage > 100.0) batteryPercentage = 100.0;
+    if (batteryPercentage < 0.0) batteryPercentage = 0.0;
+    
+    return batteryPercentage;
+}
+
+void sendHeartbeat() {
+    heartbeatData.deviceId = DEVICE_ID;
+    heartbeatData.batteryLevel = getBatteryLevel();
+    
+    esp_err_t result = esp_now_send(mainEspMac, (uint8_t *)&heartbeatData, sizeof(heartbeatData));
+    
+    if (debug) {
+        if (result == ESP_OK) {
+            Serial.println("Heartbeat sent successfully");
+        } else {
+            Serial.println("Error sending heartbeat");
+        }
+    }
+}
+
+// Callback when data is sent
+void onDataSent(const uint8_t *macAddr, esp_now_send_status_t status) {
+    if (debug) {
+        Serial.print("Data send status: ");
+        Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    
+    // Set WiFi to station mode
+    WiFi.mode(WIFI_STA);
+    
+    // Initialize ESP-NOW
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+    
+    // Register send callback
+    esp_now_register_send_cb(onDataSent);
+    
+    // Add Main ESP32 as a peer
+    esp_now_peer_info_t peerInfo;
+    memcpy(peerInfo.peer_addr, mainEspMac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add Main ESP32 as peer");
+        return;
+    }
+    
+    // Initialize heartbeat data
+    heartbeatData.deviceId = DEVICE_ID;
+    heartbeatData.batteryLevel = 100.0; // Initial battery level
+    
+    Serial.print("Child ESP32 (Device ID: ");
+    Serial.print(DEVICE_ID);
+    Serial.println(") Ready");
+    Serial.print("MAC Address: ");
+    Serial.println(WiFi.macAddress());
+}
+
+// Function to read voltages from three dividers
+void readVoltages() {
+    uint32_t voltage_mV1 = analogReadMilliVolts(VinPin1);
+    uint32_t voltage_mV2 = analogReadMilliVolts(VinPin2);
+    uint32_t voltage_mV3 = analogReadMilliVolts(VinPin3);
+    
+    // Compute actual voltages using voltage divider formula
+    voltageData.voltage[0] = (((float)voltage_mV1) / 1000.0) * (1 + (float)R2 / (float)R1);
+    voltageData.voltage[1] = (((float)voltage_mV2) / 1000.0) * (1 + (float)R2 / (float)R1);
+    voltageData.voltage[2] = (((float)voltage_mV3) / 1000.0) * (1 + (float)R2 / (float)R1);
+}
+
+// Function to print voltage data for debugging
+void printVoltageData() {
+    Serial.printf("VB1: %.2f V, VB2: %.2f V, VB3: %.2f V\n", 
+                  voltageData.voltage[0], voltageData.voltage[1], voltageData.voltage[2]);
+    Serial.println("------------------------");
+}
+
+void loop() {
+    unsigned long currentTime = millis();
+    
+    // Read and send voltage data
+    readVoltages();
+    esp_err_t result = esp_now_send(mainEspMac, (uint8_t *)&voltageData, sizeof(voltageData));
+    
+    if (debug) {
+        if (result == ESP_OK) {
+            Serial.println("Voltage Data Sent Successfully");
+            printVoltageData();
+        } else {
+            Serial.println("Error Sending Voltage Data");
+        }
+    }
+    
+    // Send heartbeat at regular intervals
+    if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+        sendHeartbeat();
+        lastHeartbeatTime = currentTime;
+    }
+    
+    delay(500);
+}
