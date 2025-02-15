@@ -1,0 +1,173 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// Pin Definitions
+#define RELAY_1_PIN 26
+#define RELAY_2_PIN 27
+#define RELAY_3_PIN 18
+#define RELAY_4_PIN 19
+
+// Configuration
+const unsigned long HEARTBEAT_INTERVAL = 5000;  // Send heartbeat every 5 seconds
+unsigned long lastHeartbeatTime = 0;
+
+// Device identification
+const uint8_t DEVICE_ID = 2;  // Change this for each ESP32 (1, 2, or 3)
+
+// MAC Address of the receiver/main ESP32 (replace with your receiver's MAC)
+uint8_t receiverMacAddress[] = {0x88, 0x13, 0xBF, 0x03, 0x67, 0x20};
+
+// Structure for heartbeat messages
+typedef struct {
+  uint8_t deviceId;
+  float batteryLevel;
+} heartbeat_message;
+
+// Structure for relay control messages
+typedef struct {
+  char messageType;  // 'R' for relay control
+  char command;      // 'A', 'a', 'B', 'b', etc.
+} relay_message;
+
+// Callback when data is received
+void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (len == sizeof(heartbeat_message)) {
+    // Handle heartbeat messages
+    heartbeat_message message;
+    memcpy(&message, data, sizeof(message));
+
+    Serial.print("Heartbeat received from Device ");
+    Serial.print(message.deviceId);
+    Serial.print(" - Battery Level: ");
+    Serial.println(message.batteryLevel);
+
+  } else if (len == sizeof(relay_message)) {
+    // Handle relay control messages
+    relay_message message;
+    memcpy(&message, data, sizeof(message));
+
+    switch (message.command) {
+      case 'A':
+        digitalWrite(RELAY_1_PIN, HIGH);
+        Serial.println("Relay 1 ON");
+        break;
+      case 'a':
+        digitalWrite(RELAY_1_PIN, LOW);
+        Serial.println("Relay 1 OFF");
+        break;
+      case 'B':
+        digitalWrite(RELAY_2_PIN, HIGH);
+        Serial.println("Relay 2 ON");
+        break;
+      case 'b':
+        digitalWrite(RELAY_2_PIN, LOW);
+        Serial.println("Relay 2 OFF");
+        break;
+      case 'C':
+        digitalWrite(RELAY_3_PIN, HIGH);
+        Serial.println("Relay 3 ON");
+        break;
+      case 'c':
+        digitalWrite(RELAY_3_PIN, LOW);
+        Serial.println("Relay 3 OFF");
+        break;
+      case 'D':
+        digitalWrite(RELAY_4_PIN, HIGH);
+        Serial.println("Relay 4 ON");
+        break;
+      case 'd':
+        digitalWrite(RELAY_4_PIN, LOW);
+        Serial.println("Relay 4 OFF");
+        break;
+      default:
+        Serial.println("Invalid Command");
+        break;
+    }
+  } else {
+    Serial.println("Unknown message received!");
+  }
+}
+
+// Callback when data is sent
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("Last Packet Send Status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+
+// Function to send heartbeat messages
+void sendHeartbeat() {
+    heartbeat_message heartbeat;
+    heartbeat.deviceId = 1;  // Set your device ID
+    heartbeat.batteryLevel = (analogRead(36) / 4095.0) * 3.3;  // Convert ADC value to voltage
+    
+    esp_err_t result = esp_now_send(receiverMacAddress, (uint8_t *)&heartbeat, sizeof(heartbeat_message));
+    if (result != ESP_OK) {
+        Serial.println("Error sending heartbeat");
+    }
+}
+
+// Function to send relay control messages
+void sendRelayCommand(char command) {
+    relay_message relay;
+    relay.messageType = 'R';  
+    relay.command = command;
+
+    esp_err_t result = esp_now_send(receiverMacAddress, (uint8_t *)&relay, sizeof(relay_message));
+    if (result != ESP_OK) {
+        Serial.println("Error sending relay command");
+    }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+
+  // Initialize ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  // Register callbacks
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataRecv);
+
+  // Register peer
+  esp_now_peer_info_t peerInfo;
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, receiverMacAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+  // Initialize relay pins
+  pinMode(RELAY_1_PIN, OUTPUT);
+  pinMode(RELAY_2_PIN, OUTPUT);
+  pinMode(RELAY_3_PIN, OUTPUT);
+  pinMode(RELAY_4_PIN, OUTPUT);
+  
+  // Set initial relay states
+  digitalWrite(RELAY_1_PIN, LOW);
+  digitalWrite(RELAY_2_PIN, LOW);
+  digitalWrite(RELAY_3_PIN, LOW);
+  digitalWrite(RELAY_4_PIN, LOW);
+
+  Serial.println("Setup completed");
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // Send heartbeat at regular intervals
+  if (currentTime - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+    sendHeartbeat();
+    lastHeartbeatTime = currentTime;
+  }
+}
