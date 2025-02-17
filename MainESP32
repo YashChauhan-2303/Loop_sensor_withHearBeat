@@ -4,14 +4,15 @@
 #include <esp_now.h>
 
 // MAC addresses of the ESP devices (replace with actual MAC addresses)
-uint8_t esp1Mac[] = {0x3c, 0x71, 0xbf, 0x85, 0xb7, 0xec}; // ESP1 (Relays)
-uint8_t esp2Mac[] = {0xe4, 0x65, 0xb8, 0x79, 0x5a, 0x74}; // ESP2 (IMU + Temp + Temp)
-uint8_t voltageSensorMac[] = {0xa0, 0xdd, 0x6c, 0xb2, 0x42, 0x4c}; // ESP3 (Voltage Sensor)
+uint8_t voltageSensorMac[] = {0x3c, 0x71, 0xbf, 0x85, 0xb7, 0xec}; // ESP3 (Voltage Sensor)
+uint8_t esp2Mac[] = {0xe8, 0x6b, 0xea, 0xd5, 0x0b, 0xb4}; // ESP2 (IMU + Temp + Temp)
+uint8_t esp1Mac[] = {0xa0, 0xdd, 0x6c, 0xb2, 0x42, 0x4c}; // ESP1 (Relays)
 
-// Structure for controlling relays on ESP1
+// Structure for controlling relays on ESP1 (updated to match child ESP)
 typedef struct {
-  char command; // 'A', 'a', 'B', 'b', 'C', 'c', 'D', 'd'
-} RelayCommand;
+  char messageType;  // 'R' for relay control
+  char command;      // 'A', 'a', 'B', 'b', etc.
+} relay_message;
 
 // Structure for receiving voltage data
 typedef struct {
@@ -192,7 +193,8 @@ void loop() {
     char input = Serial.read();
     if (input == 'A' || input == 'a' || input == 'B' || input == 'b' || 
         input == 'C' || input == 'c' || input == 'D' || input == 'd') {
-      RelayCommand relayCommand = {input};
+      // Create relay message with proper structure (messageType 'R' + command)
+      relay_message relayCommand = {'R', input};
       esp_now_send(esp1Mac, (uint8_t *)&relayCommand, sizeof(relayCommand));
       Serial.print("Command Sent to ESP1: ");
       Serial.println(input);
