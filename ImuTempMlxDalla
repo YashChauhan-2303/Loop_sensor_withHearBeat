@@ -19,7 +19,15 @@ DallasTemperature dsSensor(&oneWire);
 const unsigned long HEARTBEAT_INTERVAL = 5000;  // Send heartbeat every 5 seconds
 unsigned long lastHeartbeatTime = 0;
 
+// Variables for integration (to compute velocity)
+unsigned long lastIntegrationTime = 0;
+float velocity[3] = {0.0, 0.0, 0.0};  // Velocity for X, Y, Z axes (in m/s)
+const float ACC_THRESHOLD = 0.6;  // Changed threshold for acceleration noise (in m/s²)
+const float VEL_THRESHOLD = 0.05; // Threshold for zeroing small velocity values (in m/s)
+const float DECAY_FACTOR = 0.1;   // Decay factor to slowly reduce velocity when acceleration is 0
+
 // ESP-NOW Data Structure for IMU and Temperature
+// Note: The "accel" field will now contain velocity (in m/s) instead of acceleration.
 typedef struct {
     float orientation[3];
     float gyro[3];
@@ -100,6 +108,9 @@ void setup() {
 
     // Initialize heartbeat
     heartbeat.deviceId = 2;  // This is ESP2 (IMU + Temp)
+
+    // Initialize integration timing
+    lastIntegrationTime = millis();
 }
 
 void sendHeartbeat() {
@@ -124,7 +135,8 @@ void loop() {
     sensors_event_t orientationData, gyroData, accelData;
     bno.getEvent(&orientationData, Adafruit_BNO055::VECTOR_EULER);
     bno.getEvent(&gyroData, Adafruit_BNO055::VECTOR_GYROSCOPE);
-    bno.getEvent(&accelData, Adafruit_BNO055::VECTOR_ACCELEROMETER);
+    // Use VECTOR_LINEARACCEL to remove gravity from acceleration readings
+    bno.getEvent(&accelData, Adafruit_BNO055::VECTOR_LINEARACCEL);
 
     imuData.orientation[0] = orientationData.orientation.x;
     imuData.orientation[1] = orientationData.orientation.y;
@@ -132,9 +144,38 @@ void loop() {
     imuData.gyro[0] = gyroData.gyro.x;
     imuData.gyro[1] = gyroData.gyro.y;
     imuData.gyro[2] = gyroData.gyro.z;
-    imuData.accel[0] = accelData.acceleration.x;
-    imuData.accel[1] = accelData.acceleration.y;
-    imuData.accel[2] = accelData.acceleration.z;
+
+    // Integrate acceleration to compute velocity
+    unsigned long currentIntegrationTime = millis();
+    float dt = (currentIntegrationTime - lastIntegrationTime) / 1000.0;  // dt in seconds
+    lastIntegrationTime = currentIntegrationTime;
+
+    // Threshold the acceleration to reduce noise integration
+    float ax = (fabs(accelData.acceleration.x) < ACC_THRESHOLD) ? 0 : accelData.acceleration.x;
+    float ay = (fabs(accelData.acceleration.y) < ACC_THRESHOLD) ? 0 : accelData.acceleration.y;
+    float az = (fabs(accelData.acceleration.z) < ACC_THRESHOLD) ? 0 : accelData.acceleration.z;
+
+    // If no significant acceleration is detected, apply decay to reduce velocity
+    if (ax == 0 && ay == 0 && az == 0) {
+        velocity[0] *= DECAY_FACTOR;
+        velocity[1] *= DECAY_FACTOR;
+        velocity[2] *= DECAY_FACTOR;
+    } else {
+        // Otherwise, integrate the acceleration normally
+        velocity[0] += ax * dt;
+        velocity[1] += ay * dt;
+        velocity[2] += az * dt;
+    }
+
+    // Zero small velocities to counteract residual drift
+    if (fabs(velocity[0]) < VEL_THRESHOLD) velocity[0] = 0;
+    if (fabs(velocity[1]) < VEL_THRESHOLD) velocity[1] = 0;
+    if (fabs(velocity[2]) < VEL_THRESHOLD) velocity[2] = 0;
+
+    // Instead of sending acceleration, send the computed velocity
+    imuData.accel[0] = velocity[0];
+    imuData.accel[1] = velocity[1];
+    imuData.accel[2] = velocity[2];
 
     // Read MLX90614 temperature
     imuData.mlxTemperature = mlx.readObjectTempC();
@@ -150,15 +191,18 @@ void loop() {
         imuData.dsTemperature = dsTemp;
     }
 
-    // Print values to Serial Monitor
-    Serial.print("MLX90614 Temp: "); Serial.print(imuData.mlxTemperature); Serial.print("°C | ");
-    Serial.print("DS18B20 Temp: "); Serial.print(imuData.dsTemperature); Serial.println("°C");
+    // Print sensor values to Serial Monitor (velocity will be printed in place of acceleration)
+    Serial.print("MLX90614 Temp: ");
+    Serial.print(imuData.mlxTemperature);
+    Serial.print("°C | DS18B20 Temp: ");
+    Serial.print(imuData.dsTemperature);
+    Serial.println("°C");
 
-    // Send Data via ESP-NOW
+    // Send data via ESP-NOW
     esp_err_t result = esp_now_send(receiverMacAddress, (uint8_t *)&imuData, sizeof(imuData));
     if (result != ESP_OK) {
         Serial.println("❌ ESP-NOW Send Failed!");
     }
 
     delay(2000);  // Delay between sensor readings
-}
+} 
